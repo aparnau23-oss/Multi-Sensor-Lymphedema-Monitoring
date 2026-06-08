@@ -1,0 +1,280 @@
+/************************************************************
+ AI BASED LYMPHEDEMA MONITORING SYSTEM
+ GENERAL GITHUB VERSION
+ ESP32 + FLEX + FSR + HX711 + MPU6050 + LM35 + LCD + BLYNK
+************************************************************/
+
+#define BLYNK_TEMPLATE_ID "YOUR_TEMPLATE_ID"
+#define BLYNK_TEMPLATE_NAME "Lymphedema Monitor"
+#define BLYNK_AUTH_TOKEN "YOUR_BLYNK_AUTH_TOKEN"
+
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
+
+#include <HX711.h>
+
+#include <Wire.h>
+#include <MPU6050.h>
+
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+
+// ================= WIFI =================
+
+char ssid[] = "YOUR_WIFI_NAME";
+char pass[] = "YOUR_WIFI_PASSWORD";
+
+// ================= SENSOR PINS =================
+
+#define FLEX_PIN 34
+#define FSR_PIN 35
+#define TEMP_PIN 32
+
+#define DT 4
+#define SCK 5
+
+// ================= OBJECTS =================
+
+HX711 scale;
+MPU6050 mpu;
+hd44780_I2Cexp lcd;
+
+// ================= VARIABLES =================
+
+float temperature;
+
+int flexValue;
+int fsrValue;
+long strainValue;
+int motionValue;
+
+String statusText;
+
+// ======================================================
+// FUNCTION TO CONVERT SENSOR VALUES TO PERCENTAGE
+// ======================================================
+
+int getPercent(float value, float limit)
+{
+  int percent = (value / limit) * 100;
+
+  if (percent < 0)
+    percent = 0;
+
+  if (percent > 100)
+    percent = 100;
+
+  return percent;
+}
+
+// ======================================================
+
+void setup()
+{
+  Serial.begin(115200);
+
+  // LCD
+
+  lcd.begin(16, 2);
+  lcd.backlight();
+
+  lcd.setCursor(0, 0);
+  lcd.print("Connecting...");
+
+  // WIFI + BLYNK
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // HX711
+
+  scale.begin(DT, SCK);
+
+  // I2C
+
+  Wire.begin();
+
+  // MPU6050
+
+  mpu.initialize();
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("System Ready");
+
+  Serial.println("System Ready");
+
+  delay(2000);
+}
+
+// ======================================================
+
+void loop()
+{
+  Blynk.run();
+
+  // ---------------- FLEX ----------------
+
+  flexValue = analogRead(FLEX_PIN);
+
+  // ---------------- FSR ----------------
+
+  fsrValue = analogRead(FSR_PIN);
+
+  // ---------------- TEMPERATURE ----------------
+
+  int tempRaw = analogRead(TEMP_PIN);
+
+  float voltage = tempRaw * (3.3 / 4095.0);
+
+  temperature = voltage * 100.0;
+
+  // ---------------- HX711 ----------------
+
+  strainValue = scale.read();
+
+  if (strainValue < 0)
+  {
+    strainValue = 0;
+  }
+
+  // ---------------- MPU6050 ----------------
+
+  int16_t ax, ay, az;
+
+  mpu.getAcceleration(&ax, &ay, &az);
+
+  motionValue = abs(ax) + abs(ay) + abs(az);
+
+  // ======================================================
+  // CONVERT TO PERCENTAGES
+  // ======================================================
+
+  int tempPercent =
+      getPercent(temperature, 37.0);
+
+  int flexPercent =
+      getPercent(flexValue, 2500);
+
+  int fsrPercent =
+      getPercent(fsrValue, 1500);
+
+  int strainPercent =
+      getPercent(strainValue, 50000);
+
+  int motionPercent =
+      getPercent(motionValue, 50000);
+
+  // ======================================================
+  // OVERALL RISK %
+  // ======================================================
+
+  int overallRisk =
+      (tempPercent +
+       flexPercent +
+       fsrPercent +
+       strainPercent) / 4;
+
+  // ======================================================
+  // SWELLING DETECTION LOGIC
+  // ======================================================
+
+  if (
+      temperature > 37.0 ||
+      flexValue > 2500 ||
+      fsrValue > 1500 ||
+      strainValue > 50000)
+  {
+    statusText = "SWELLING";
+
+    Blynk.virtualWrite(V6, 255);
+  }
+  else
+  {
+    statusText = "NORMAL";
+
+    Blynk.virtualWrite(V6, 0);
+  }
+
+  // ======================================================
+  // SERIAL MONITOR
+  // ======================================================
+
+  Serial.print("Temp Risk: ");
+  Serial.print(tempPercent);
+  Serial.print("%");
+
+  Serial.print(" | Flex Risk: ");
+  Serial.print(flexPercent);
+  Serial.print("%");
+
+  Serial.print(" | Pressure Risk: ");
+  Serial.print(fsrPercent);
+  Serial.print("%");
+
+  Serial.print(" | Strain Risk: ");
+  Serial.print(strainPercent);
+  Serial.print("%");
+
+  Serial.print(" | Motion: ");
+  Serial.print(motionPercent);
+  Serial.print("%");
+
+  Serial.print(" | Overall Risk: ");
+  Serial.print(overallRisk);
+  Serial.print("%");
+
+  Serial.print(" | Status: ");
+  Serial.println(statusText);
+
+  // ======================================================
+  // LCD DISPLAY
+  // ======================================================
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+
+  lcd.print(statusText);
+
+  lcd.print(" ");
+
+  lcd.print(overallRisk);
+
+  lcd.print("%");
+
+  lcd.setCursor(0, 1);
+
+  lcd.print("T:");
+
+  lcd.print(tempPercent);
+
+  lcd.print("%");
+
+  lcd.print(" P:");
+
+  lcd.print(fsrPercent);
+
+  lcd.print("%");
+
+  // ======================================================
+  // SEND DATA TO BLYNK
+  // ======================================================
+
+  Blynk.virtualWrite(V0, tempPercent);
+
+  Blynk.virtualWrite(V1, flexPercent);
+
+  Blynk.virtualWrite(V2, fsrPercent);
+
+  Blynk.virtualWrite(V3, strainPercent);
+
+  Blynk.virtualWrite(V4, motionPercent);
+
+  Blynk.virtualWrite(V5, statusText);
+
+  Blynk.virtualWrite(V7, overallRisk);
+
+  delay(1000);
+}
